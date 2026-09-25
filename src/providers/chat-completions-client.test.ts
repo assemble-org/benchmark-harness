@@ -643,3 +643,34 @@ describe("makeChatCompletionsLayer", () => {
     );
   });
 });
+
+describe("makeChatCompletionsLayer gateway deadline", () => {
+  let originalFetch: typeof globalThis.fetch;
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("maps an OpenAI-shaped deadline frame with no numeric code to 504", async () => {
+    globalThis.fetch = async () =>
+      new Response(
+        'data: {"error":{"message":"The upstream connection went silent past the gateway\'s limit. Retry the request to continue on another backend.","type":"server_error","param":null,"code":null}}\n\ndata: [DONE]\n\n',
+        { status: 200, headers: { "content-type": "text/event-stream" } }
+      );
+    const exit = await runPromiseExit(
+      gen(function* run() {
+        const responses = yield* Responses;
+        return yield* responses.send({ model: "m", input: [] } as never, {
+          timeoutMs: 1000,
+        });
+      }).pipe(provide(makeChatCompletionsLayer({ apiKey: "sk-test" })))
+    );
+    assertFailure(exit);
+    const error = getOrThrow(failureOption(exit.cause));
+    expect(error).toBeInstanceOf(ResponsesError);
+    expect(error.status).toBe(504);
+    expect(error.retryable).toBe(true);
+  });
+});

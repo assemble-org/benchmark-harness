@@ -409,13 +409,22 @@ async function readSseStream(
   }
 }
 
+// A gateway that fails after committing the 200 reports the failure as an
+// OpenAI error object with no HTTP status. OpenRouter's own shape carries
+// the status in `code` as a number; SkyPilot Tokens sends the OpenAI shape
+// (code null or a string) and names a gateway deadline in the message, so
+// the status is taken from `code` when numeric and from the message
+// otherwise: 504 for the gateway's own deadline, 502 for a backend cut.
+const GATEWAY_DEADLINE_MESSAGE = /went silent past the gateway|deadline/iu;
+
 function streamErrorToResponsesError(
   error: Record<string, unknown>,
   identifiers: ModelErrorIdentifiers
 ): ResponsesError {
   const code = error["code"];
-  const status = typeof code === "number" ? code : 502;
   const message = typeof error["message"] === "string" ? error["message"] : "stream error";
+  const status =
+    typeof code === "number" ? code : GATEWAY_DEADLINE_MESSAGE.test(message) ? 504 : 502;
   return new ResponsesError({
     message: appendModelErrorIdentifiers(`Chat stream error: ${message}`, identifiers),
     status,
