@@ -119,7 +119,7 @@ describe("openrouter-model", () => {
       )
     );
     assertSuccess(exit);
-    expect(request?.url).toBe("https://example.test/api/v1/responses");
+    expect(request?.url).toBe("https://example.test/responses");
     const body: unknown = JSON.parse(await request!.clone().text());
     expect(body).toMatchObject({
       input: [
@@ -188,7 +188,7 @@ describe("openrouter-model", () => {
       )
     );
     assertSuccess(exit);
-    expect(request?.url).toBe("https://example.test/api/v1/responses");
+    expect(request?.url).toBe("https://example.test/responses");
     expect(request?.headers.get("traceparent")).toBe(traceparent);
     expect(request?.headers.get("x-benchmark-trace")).toBe("test-trace-key");
     expect(request?.headers.get("authorization")).toBe("Bearer sk-test");

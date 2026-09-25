@@ -29,6 +29,11 @@ export interface OpenRouterModelConfig {
 
 export function normalizeBaseUrl(baseUrl: string): string {
   const trimmed = baseUrl.replace(/\/+$/u, "");
+  // skypilot-patches: only openrouter.ai gets the implicit /api/v1 suffix. Any
+  // other host (a provider tested directly) is used exactly as given.
+  if (!/^https?:\/\/([^/]*\.)?openrouter\.ai(\/|$)/u.test(trimmed)) {
+    return trimmed;
+  }
   return trimmed.endsWith("/api/v1") ? trimmed : `${trimmed}/api/v1`;
 }
 
