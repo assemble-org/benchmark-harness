@@ -34,6 +34,8 @@ import { definedValues, isMember } from "../internal/guards";
 import { parseSchema } from "../internal/zod";
 import { makeLocalResultStore } from "../results/result-store";
 import { datasetSizeById, runBenchmarkById } from "../runner/run-by-id";
+import { STREAM_ENV, WIRE_ENV, WIRES } from "../providers/chat-completions-client";
+import type { Wire } from "../providers/chat-completions-client";
 
 interface CliArgs {
   readonly benchmark: string;
@@ -48,6 +50,10 @@ interface CliArgs {
   readonly artifactDir?: string;
   readonly resumeId?: string;
   readonly imageDetail?: ImageDetail;
+  // skypilot-patches: which API the provider is driven over.
+  readonly wire?: Wire;
+  // skypilot-patches: --no-stream, chat wire only.
+  readonly noStream: boolean;
   readonly costTier?: CostTier;
   readonly reasoningEffort: ReasoningEffort;
 }
@@ -74,6 +80,8 @@ export function parseArgs(argv: readonly string[]): CliArgs {
     artifactDir: get("--artifact-dir"),
     resumeId: get("--resume-id"),
     imageDetail: validateImageDetail(get("--image-detail")),
+    wire: validateWire(get("--wire")),
+    noStream: argv.includes("--no-stream"),
     costTier: validateCostTier(get("--cost-tier")),
     reasoningEffort: validateReasoningEffort(
       get("--reasoning-effort"),
@@ -158,6 +166,15 @@ function main(): Promise<void> {
     throw new Error(
       `Unknown benchmark "${args.benchmark}". Available: ${benchmarkIds().join(", ")}`
     );
+  }
+  if (args.wire !== undefined) {
+    process.env[WIRE_ENV] = args.wire;
+  }
+  if (args.noStream) {
+    if ((args.wire ?? process.env[WIRE_ENV]) !== "chat") {
+      throw new Error("--no-stream needs --wire chat; the Responses client always streams");
+    }
+    process.env[STREAM_ENV] = "false";
   }
   const apiKey = resolveApiKey();
   const baseUrl = getOrNull(
@@ -531,4 +548,15 @@ export function buildBenchmarkConfig(opts: {
 }
 if (import.meta.main) {
   await main();
+}
+
+// skypilot-patches: --wire responses|chat (default: responses, or OPENROUTER_WIRE).
+function validateWire(raw: string | undefined): Wire | undefined {
+  if (raw === undefined) {
+    return undefined;
+  }
+  if ((WIRES as readonly string[]).includes(raw)) {
+    return raw as Wire;
+  }
+  throw new Error(`--wire must be one of ${WIRES.join(", ")}, got "${raw}"`);
 }
