@@ -50,6 +50,15 @@ import {
 } from "./responses-client";
 
 export const WIRE_ENV = "OPENROUTER_WIRE";
+// STREAM_ENV=false makes the chat wire send `stream: false` and read one
+// JSON body. Only the chat wire honours it; the Responses client always
+// streams. The --no-stream CLI flag sets it.
+export const STREAM_ENV = "OPENROUTER_STREAM";
+
+// chatStreamsFromEnv returns false only when OPENROUTER_STREAM is "false".
+export function chatStreamsFromEnv(): boolean {
+  return process.env[STREAM_ENV] !== "false";
+}
 export const WIRES = ["responses", "chat"] as const;
 export type Wire = (typeof WIRES)[number];
 
@@ -207,7 +216,8 @@ function toolToChat(tool: unknown): unknown {
 // Responses layer's mergeExtraBody.
 export function responsesRequestToChat(
   body: ResponsesRequest,
-  extraBody: Readonly<Record<string, unknown>> | undefined
+  extraBody: Readonly<Record<string, unknown>> | undefined,
+  stream = true
 ): Record<string, unknown> {
   const b = body as unknown as Record<string, unknown>;
   const reasoning = isRecord(b["reasoning"]) ? b["reasoning"] : undefined;
@@ -218,8 +228,8 @@ export function responsesRequestToChat(
       b["input"],
       typeof b["instructions"] === "string" ? b["instructions"] : undefined
     ),
-    stream: true,
-    stream_options: { include_usage: true },
+    stream,
+    ...(stream ? { stream_options: { include_usage: true } } : {}),
     ...definedValues({
       temperature: b["temperature"],
       max_tokens: b["maxOutputTokens"] ?? b["max_output_tokens"],
@@ -228,6 +238,78 @@ export function responsesRequestToChat(
     }),
     ...extraBody,
   };
+}
+
+// nonStreamBodyToAccumulator reads one chat.completion object into the
+// same accumulator the stream path fills. A body that carries an `error`
+// object instead of choices (a gateway that failed after committing its
+// 200) throws the same ResponsesError a stream error frame would. Leading
+// whitespace, which a gateway may send as a heartbeat before the body, is
+// valid JSON and needs no handling.
+export function nonStreamBodyToAccumulator(
+  text: string,
+  identifiers: ModelErrorIdentifiers
+): ChatAccumulator {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new ResponsesError({
+      message: appendModelErrorIdentifiers(
+        `Chat body was not JSON: ${text.trim().slice(0, 200)}`,
+        identifiers
+      ),
+      status: 502,
+      retryable: true,
+      ...identifiers,
+    });
+  }
+  if (!isRecord(parsed)) {
+    throw new ResponsesError({ message: "Chat body was not a JSON object", status: 502, retryable: true, ...identifiers });
+  }
+  if (isRecord(parsed["error"])) {
+    throw streamErrorToResponsesError(parsed["error"], identifiers);
+  }
+  const acc: ChatAccumulator = {
+    id: typeof parsed["id"] === "string" ? parsed["id"] : null,
+    model: typeof parsed["model"] === "string" ? parsed["model"] : null,
+    text: "",
+    reasoning: "",
+    toolCalls: new Map(),
+    finishReason: null,
+    usage: isRecord(parsed["usage"]) ? parsed["usage"] : null,
+    sawDone: true,
+  };
+  const choices = parsed["choices"];
+  const choice = Array.isArray(choices) && isRecord(choices[0]) ? choices[0] : undefined;
+  if (choice === undefined) {
+    throw new ResponsesError({ message: appendModelErrorIdentifiers("Chat body had no choices", identifiers), status: 502, retryable: true, ...identifiers });
+  }
+  if (typeof choice["finish_reason"] === "string") {
+    acc.finishReason = choice["finish_reason"];
+  }
+  const message = isRecord(choice["message"]) ? choice["message"] : {};
+  if (typeof message["content"] === "string") {
+    acc.text = message["content"];
+  }
+  const reasoning = message["reasoning"] ?? message["reasoning_content"];
+  if (typeof reasoning === "string") {
+    acc.reasoning = reasoning;
+  }
+  if (Array.isArray(message["tool_calls"])) {
+    message["tool_calls"].forEach((call, index) => {
+      if (!isRecord(call)) {
+        return;
+      }
+      const fn = isRecord(call["function"]) ? call["function"] : {};
+      acc.toolCalls.set(index, {
+        id: typeof call["id"] === "string" ? call["id"] : "",
+        name: typeof fn["name"] === "string" ? fn["name"] : "",
+        arguments: typeof fn["arguments"] === "string" ? fn["arguments"] : "",
+      });
+    });
+  }
+  return acc;
 }
 
 interface ToolCallAcc {
@@ -436,6 +518,7 @@ function streamErrorToResponsesError(
 export function makeChatCompletionsLayer(config: ResponsesConfig): Layer<Responses> {
   const traceHeaders = filterTraceHeaders(config.traceHeaders);
   const url = `${chatBaseUrl(config.baseUrl)}/chat/completions`;
+  const stream = chatStreamsFromEnv();
   const send = (
     body: ResponsesRequest,
     options: ResponsesSendOptions,
@@ -469,7 +552,7 @@ export function makeChatCompletionsLayer(config: ResponsesConfig): Layer<Respons
           const response = await fetch(url, {
             method: "POST",
             headers,
-            body: JSON.stringify(responsesRequestToChat(body, options.extraBody)),
+            body: JSON.stringify(responsesRequestToChat(body, options.extraBody, stream)),
             signal: controller.signal,
           });
           identifiers = modelErrorIdentifiersFromFetchHeaders(response.headers);
@@ -494,6 +577,18 @@ export function makeChatCompletionsLayer(config: ResponsesConfig): Layer<Respons
               retryable: true,
               ...identifiers,
             });
+          }
+          if (!stream) {
+            const acc = nonStreamBodyToAccumulator(await response.text(), identifiers);
+            if (acc.id !== null) {
+              identifiers = { ...identifiers, generationId: acc.id };
+            }
+            const result = accumulatorToResult(acc, Math.round(performance.now() - startedAt));
+            options.onStreamEvent?.({
+              type: "response.completed",
+              response: { id: result.id, model: result.model, output: result.output, status: result.status },
+            } as unknown as StreamEvents);
+            return result;
           }
           const acc: ChatAccumulator = {
             id: null,

@@ -674,3 +674,77 @@ describe("makeChatCompletionsLayer gateway deadline", () => {
     expect(error.retryable).toBe(true);
   });
 });
+
+describe("chat wire without streaming", () => {
+  let originalFetch: typeof globalThis.fetch;
+  let captured: Request | undefined;
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    captured = undefined;
+    process.env["OPENROUTER_STREAM"] = "false";
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    delete process.env["OPENROUTER_STREAM"];
+  });
+
+  function stub(body: string, status = 200): void {
+    globalThis.fetch = async (input, init) => {
+      captured = input instanceof Request ? input : new Request(input, init);
+      return new Response(body, { status, headers: { "content-type": "application/json" } });
+    };
+  }
+
+  async function send() {
+    return runPromiseExit(
+      gen(function* run() {
+        const responses = yield* Responses;
+        return yield* responses.send({ model: "m", input: "hi" } as never, { timeoutMs: 1000 });
+      }).pipe(provide(makeChatCompletionsLayer({ apiKey: "sk-test", baseUrl: "https://example.test/v1" })))
+    );
+  }
+
+  it("sends stream:false and reads one body, after a whitespace heartbeat", async () => {
+    stub(
+      "\n\n   " +
+        JSON.stringify({
+          id: "chatcmpl-9",
+          model: "m",
+          choices: [
+            {
+              index: 0,
+              finish_reason: "stop",
+              message: { role: "assistant", content: "Answer: B", reasoning: "think" },
+            },
+          ],
+          usage: { prompt_tokens: 4, completion_tokens: 6, total_tokens: 10 },
+        })
+    );
+    const exit = await send();
+    assertSuccess(exit);
+    const sent: Record<string, unknown> = JSON.parse(await captured!.clone().text());
+    expect(sent["stream"]).toBe(false);
+    expect(sent["stream_options"]).toBeUndefined();
+    expect(exit.value.text).toBe("Answer: B");
+    expect(exit.value.output[0]).toMatchObject({ type: "reasoning" });
+    expect(exit.value.usage).toMatchObject({ outputTokens: 6 });
+  });
+
+  it("maps an error-only 200 body to a ResponsesError", async () => {
+    stub(
+      JSON.stringify({
+        error: {
+          message: "The upstream connection went silent past the gateway's limit.",
+          type: "server_error",
+          param: null,
+          code: null,
+        },
+      })
+    );
+    const exit = await send();
+    assertFailure(exit);
+    const error = getOrThrow(failureOption(exit.cause));
+    expect(error.status).toBe(504);
+    expect(error.retryable).toBe(true);
+  });
+});
