@@ -101,12 +101,19 @@ function makeAirlineLayer(
       )
     );
   }
+  // skypilot-patches: the simulated user can call a different gateway than
+  // the model under test. OPENROUTER_USER_BASE_URL / OPENROUTER_USER_API_KEY
+  // send it to real OpenRouter (so it stays google/gemini-2.5-flash, the
+  // model OpenRouter's own runs use) while the agent model goes to the
+  // provider under test. Unset, both fall back to the agent's base URL/key.
+  const userBaseUrl = process.env.OPENROUTER_USER_BASE_URL || input.baseUrl;
+  const userApiKey = process.env.OPENROUTER_USER_API_KEY || input.apiKey;
   const solverOpts: SolverOpts = definedValues({
     endpointId: benchmarkConfig.endpointId,
     userModelConfig: definedValues({
-      apiKey: input.apiKey,
+      apiKey: userApiKey,
       model: benchmarkConfig.userModel,
-      baseUrl: input.baseUrl,
+      baseUrl: userBaseUrl,
       sessionId: input.sessionId,
       reasoningEffort: benchmarkConfig.userReasoningEffort,
     }),
@@ -142,8 +149,8 @@ function makeAirlineLayer(
   const userModelLayer = makeResponsesModelLayer(
     definedValues({
       model: benchmarkConfig.userModel,
-      apiKey: input.apiKey,
-      baseUrl: input.baseUrl,
+      apiKey: userApiKey,
+      baseUrl: userBaseUrl,
       sessionId: input.sessionId,
       traceHeaders: input.traceHeaders,
     })
