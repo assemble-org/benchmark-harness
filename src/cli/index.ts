@@ -299,7 +299,10 @@ function main(): Promise<void> {
                 value: s.score.value,
                 answer: s.score.answer,
                 explanation: s.score.explanation,
-                metadata: s.metadata,
+                // skypilot-patches: per-sample metadata is left out. On tau
+                // airline it holds the whole simulated conversation (about 4 MB
+                // per sample), so 9 epochs made this string about 3 GB and Bun
+                // ran out of memory in JSON.stringify. The parquet keeps it.
               })
             ),
           }),
