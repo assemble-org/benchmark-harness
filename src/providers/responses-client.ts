@@ -29,6 +29,7 @@ import { Either } from "../internal/either";
 import { definedValues, isRecord } from "../internal/guards";
 import { parseSchema, z } from "../internal/zod";
 import { filterTraceHeaders } from "../runner/trace-headers";
+import { makeChatCompletionsLayer, wireFromEnv } from "./chat-completions-client";
 import { recordGenerationId } from "../runtime/generation-ids";
 import {
   buildRequestSessionId,
@@ -181,10 +182,19 @@ export type ResponsesService = {
 
 function normalizeBaseUrl(baseUrl: string): string {
   const trimmed = baseUrl.replace(/\/+$/, "");
+  // skypilot-patches: only openrouter.ai gets the implicit /api/v1 suffix. Any
+  // other host (a provider tested directly) is used exactly as given.
+  if (!/^https?:\/\/([^/]*\.)?openrouter\.ai(\/|$)/u.test(trimmed)) {
+    return trimmed;
+  }
   return trimmed.endsWith("/api/v1") ? trimmed : `${trimmed}/api/v1`;
 }
 
 export function makeResponsesLayer(config: ResponsesConfig): Layer<Responses> {
+  // skypilot-patches: OPENROUTER_WIRE=chat swaps in the chat-completions client.
+  if (wireFromEnv() === "chat") {
+    return makeChatCompletionsLayer(config);
+  }
   const traceHeaders = filterTraceHeaders(config.traceHeaders);
   const send = (
     body: ResponsesRequest,
@@ -859,7 +869,7 @@ function toResponsesError(
   });
 }
 
-function parseRetryAfter(value: string | null): number | undefined {
+export function parseRetryAfter(value: string | null): number | undefined {
   if (value === null) {
     return undefined;
   }
