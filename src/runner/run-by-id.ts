@@ -70,6 +70,7 @@ export interface RunBenchmarkInput {
   readonly resultStore?: ResultStoreService;
   readonly maxOutputTokensCeiling?: number;
   readonly traceHeaders?: Readonly<Record<string, string>>;
+  readonly resume?: RunConfig["resume"];
 }
 
 export interface RunBenchmarkOutput {
@@ -98,6 +99,7 @@ export function runBenchmarkById(
     epochs: input.epochs,
     maxConcurrency: input.maxConcurrency,
     range: input.range,
+    resume: input.resume,
     degradeSolverErrors: benchmark.degradeSolverErrors,
     logAnnotations: definedValues({
       benchmark: input.benchmarkId,

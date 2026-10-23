@@ -32,10 +32,15 @@ import { runHarnessPromise } from "../internal/effect-logger";
 import { Either } from "../internal/either";
 import { definedValues, isMember } from "../internal/guards";
 import { parseSchema } from "../internal/zod";
+import {
+  STREAM_ENV,
+  WIRE_ENV,
+  WIRES,
+} from "../providers/chat-completions-client";
+import type { Wire } from "../providers/chat-completions-client";
+import { openCheckpointDir } from "../results/checkpoint-dir";
 import { makeLocalResultStore } from "../results/result-store";
 import { datasetSizeById, runBenchmarkById } from "../runner/run-by-id";
-import { STREAM_ENV, WIRE_ENV, WIRES } from "../providers/chat-completions-client";
-import type { Wire } from "../providers/chat-completions-client";
 
 interface CliArgs {
   readonly benchmark: string;
@@ -56,6 +61,7 @@ interface CliArgs {
   readonly noStream: boolean;
   readonly costTier?: CostTier;
   readonly reasoningEffort: ReasoningEffort;
+  readonly checkpointDir?: string;
 }
 
 export function parseArgs(argv: readonly string[]): CliArgs {
@@ -79,6 +85,7 @@ export function parseArgs(argv: readonly string[]): CliArgs {
     solverConfig: get("--solver-config"),
     artifactDir: get("--artifact-dir"),
     resumeId: get("--resume-id"),
+    checkpointDir: get("--checkpoint-dir"),
     imageDetail: validateImageDetail(get("--image-detail")),
     wire: validateWire(get("--wire")),
     noStream: argv.includes("--no-stream"),
@@ -172,7 +179,9 @@ function main(): Promise<void> {
   }
   if (args.noStream) {
     if ((args.wire ?? process.env[WIRE_ENV]) !== "chat") {
-      throw new Error("--no-stream needs --wire chat; the Responses client always streams");
+      throw new Error(
+        "--no-stream needs --wire chat; the Responses client always streams"
+      );
     }
     process.env[STREAM_ENV] = "false";
   }
@@ -237,6 +246,27 @@ function main(): Promise<void> {
       if (total !== undefined) {
         bar.start(total, 0, { sample: "" });
       }
+      const resume =
+        args.checkpointDir === undefined
+          ? undefined
+          : openCheckpointDir(
+              args.checkpointDir,
+              definedValues({
+                benchmark: args.benchmark,
+                model: args.model,
+                epochs,
+                range,
+                reasoningEffort: args.reasoningEffort,
+                wire: args.wire,
+                noStream: args.noStream,
+                solverConfig: args.solverConfig,
+              })
+            );
+      if (resume !== undefined) {
+        process.stderr.write(
+          `Checkpoint ${args.checkpointDir}: ${resume.done.length} sample-epochs already done\n`
+        );
+      }
       const result = yield* promise(() =>
         runBenchmarkById(
           definedValues({
@@ -248,6 +278,7 @@ function main(): Promise<void> {
             baseUrl: baseUrl ? baseUrl : undefined,
             range,
             sessionId,
+            resume,
             resultStore: makeLocalResultStore({
               dir: join(process.cwd(), "bench-results"),
             }),

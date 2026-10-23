@@ -11,6 +11,7 @@ import {
 } from "effect/Effect";
 import type { Stream } from "effect/Stream";
 import {
+  filter as streamFilter,
   flatMap as streamFlatMap,
   fromIterable as streamFromIterable,
   mapEffect as streamMapEffect,
@@ -56,6 +57,10 @@ export interface RunConfig {
   };
   readonly degradeSolverErrors?: boolean;
   readonly logAnnotations?: Readonly<Record<string, string>>;
+  readonly resume?: {
+    readonly done: readonly EvalOutcome[];
+    readonly save: (outcome: EvalOutcome) => Effect<void>;
+  };
 }
 
 export interface RunResult {
@@ -75,11 +80,15 @@ interface FoldAccumulator {
   usage: UsageTotals;
 }
 
-type EvalOutcome = {
-  sampleScore: SampleScore;
-  usage?: ModelUsage;
-  generationTimeMs?: number;
-};
+export interface EvalOutcome {
+  readonly sampleScore: SampleScore;
+  readonly usage?: ModelUsage;
+  readonly generationTimeMs?: number;
+}
+
+function outcomeKey(sampleId: string, epoch: number): string {
+  return `${sampleId}#${epoch}`;
+}
 
 function sampleEpochStream(
   dataset: DatasetService,
@@ -340,11 +349,19 @@ export function runBenchmark(
         config.epochs,
         config.range
       );
-      const initialAcc: FoldAccumulator = {
+      const done = config.resume?.done ?? [];
+      const doneKeys = new Set(
+        done.map((o) => outcomeKey(o.sampleScore.sampleId, o.sampleScore.epoch))
+      );
+      let initialAcc: FoldAccumulator = {
         scores: [],
         usage: { ...ZERO_USAGE },
       };
+      for (const outcome of done) {
+        initialAcc = accumulateOutcome(initialAcc, outcome);
+      }
       return sampleEpochs.pipe(
+        streamFilter((se) => !doneKeys.has(outcomeKey(se.sample.id, se.epoch))),
         streamMapEffect(
           (se) =>
             evalWithProgress(
@@ -364,6 +381,12 @@ export function runBenchmark(
         ),
         streamRunFoldEffect(initialAcc, (acc, item) =>
           effectGen(function* () {
+            if (
+              config.resume !== undefined &&
+              item.sampleScore.score.value !== ScoreValue.Skipped
+            ) {
+              yield* config.resume.save(item);
+            }
             const updated = accumulateOutcome(acc, item);
             const reporter = yield* ProgressReporter;
             yield* reporter.onSampleComplete(updated.scores.length);
