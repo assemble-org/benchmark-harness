@@ -172,6 +172,44 @@ describe("runBenchmark", () => {
     expect(result.usage.generationTimeMs).toBe(600);
     expect(result.sampleScores[0]?.generationIds).toEqual(["fake-Q1 target B"]);
   });
+  it("resumes: skips done sample-epochs, counts them, and saves new non-skipped outcomes", async () => {
+    const calls: string[] = [];
+    const model = fakeModel((input) => {
+      calls.push(input);
+      return input.includes("Q1") ? "Answer: B" : "Answer: A";
+    });
+    const solver = chain(generate(model.service, {}));
+    const done = {
+      sampleScore: {
+        sampleId: "s-correct",
+        epoch: 0,
+        score: { value: ScoreValue.Correct, answer: "B", explanation: "" },
+        messages: [],
+        input: "Q1 target B",
+        target: "B",
+      },
+      usage: { inputTokens: 1, outputTokens: 7, totalTokens: 8 },
+    };
+    const saved: string[] = [];
+    const result = await runPromise(
+      runBenchmark({
+        epochs: 2,
+        maxConcurrency: 1,
+        resume: {
+          done: [done],
+          save: (o) => {
+            saved.push(`${o.sampleScore.sampleId}#${o.sampleScore.epoch}`);
+            return effectSucceed(undefined);
+          },
+        },
+      }).pipe(provide(makeLayers(model, solver)))
+    );
+    expect(calls.length).toBe(3);
+    expect(saved.sort()).toEqual(["s-correct#1", "s-wrong#0", "s-wrong#1"]);
+    expect(result.sampleScores.length).toBe(4);
+    expect(result.usage.outputTokens).toBe(7 + 3 * 5);
+    expect(result.metrics.correctAnswers).toBe(1);
+  });
   it("captures per-sample message trajectories", async () => {
     const model = fakeModel(() => "Answer: B");
     const solver = chain(
